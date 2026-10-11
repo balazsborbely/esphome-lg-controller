@@ -352,3 +352,5 @@ CF.00.12.34.56.00.00.00.00.00.00.00.3E => 123.5 kW
 CF.00.98.76.54.00.00.00.00.00.00.00.64 => 987.7 kW
 CF.00.AB.CD.EF.00.00.00.00.00.00.00.63 => 1123.5 kW
 ```
+
+Note (jpurcell-integration): the examples above read bytes 2-4 one nibble at a time as decimal digits. A real unit in the PR #170 review gave `CF.02.00.02.29` while the LG app showed 0.55 kW, which only fits a plain big-endian 24-bit value in W (0x000229 = 553 W). The 0xCC energy counter in bytes 3-5 likewise went backwards under the nibble reading (0x02CF -> 0x02D0 read as 33.5 -> 33.0 kWh) and is decoded here as a 24-bit value in 0.1 kWh. The reviewer also found that counter inaccurate; integrating current power matched a house meter.

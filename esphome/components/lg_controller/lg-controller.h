@@ -217,6 +217,13 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     uint8_t fan_speed_[4] = {0,0,0,0};
     uint8_t overheating_ = 0;
 
+    // Fan values 5 (low-medium) and 6 (medium-high) have no standard HA fan
+    // mode. They are shown as the next lower standard mode, and the raw value
+    // is kept here so that our next status message sends it back unchanged
+    // instead of overwriting a speed picked at the wall remote. 0xFF = none.
+    uint8_t unit_fan_raw_ = 0xFF;
+    climate::ClimateFanMode unit_fan_mapped_ = climate::CLIMATE_FAN_MEDIUM;
+
     optional<uint32_t> sleep_timer_target_millis_{};
     bool active_reservation_ = false;
     bool ignore_callbacks_ = false;
@@ -549,6 +556,7 @@ public:
         }
         if (call.get_fan_mode().has_value()) {
             this->fan_mode = *call.get_fan_mode();
+            unit_fan_raw_ = 0xFF;
         }
         if (call.get_swing_mode().has_value()) {
             set_swing_mode(*call.get_swing_mode());
@@ -864,7 +872,10 @@ private:
         }
         
         // Fix: Check if fan_mode has a value before dereferencing
-        if (this->fan_mode.has_value()) {
+        if (this->fan_mode.has_value() && unit_fan_raw_ != 0xFF &&
+            this->fan_mode.value() == unit_fan_mapped_) {
+            b |= unit_fan_raw_ << 5;
+        } else if (this->fan_mode.has_value()) {
             switch (this->fan_mode.value()) {
                 case climate::CLIMATE_FAN_LOW:
                     b |= 0 << 5;
@@ -1252,6 +1263,12 @@ private:
             case 4:
                 new_fan_mode = climate::CLIMATE_FAN_QUIET;
                 break;
+            case 5: // low-medium, see unit_fan_raw_
+                new_fan_mode = climate::CLIMATE_FAN_LOW;
+                break;
+            case 6: // medium-high, see unit_fan_raw_
+                new_fan_mode = climate::CLIMATE_FAN_MEDIUM;
+                break;
             case 7:
                 new_fan_mode = climate::CLIMATE_FAN_FOCUS;
                 break;
@@ -1317,6 +1334,12 @@ private:
 
                 this->mode = new_mode;
                 this->fan_mode = new_fan_mode;
+                if (fan_val == 5 || fan_val == 6) {
+                    unit_fan_raw_ = fan_val;
+                    unit_fan_mapped_ = new_fan_mode;
+                } else {
+                    unit_fan_raw_ = 0xFF;
+                }
                 if (swing_mode_changed) {
                     // Avoid calling set_swing_mode unless the swing
                     // mode has actually changed, since it sends a
@@ -1633,13 +1656,12 @@ private:
         }
     }
 
-    static float decode_power_nibbles_(const uint8_t* buffer, size_t offset, size_t length, float divisor) {
-        // Power payloads use LG's nibble format rather than binary integers. Some documented
-        // current-power examples contain A-F nibbles, so this intentionally is not strict BCD.
-        uint32_t result = 0;
-        for (size_t i = 0; i < length; i++) {
-            result = result * 100 + ((buffer[offset + i] >> 4) & 0xF) * 10 + (buffer[offset + i] & 0xF);
-        }
+    static float decode_power_uint24_(const uint8_t* buffer, size_t offset, float divisor) {
+        // Plain big-endian 24-bit integers, per the #170 review: CF.02.00.02.29 = 553 W matched
+        // the LG app (0.55 kW). The earlier nibble-decimal decode made the 0xCC counter go
+        // backwards when a low nibble rolled F->0 (0x02CF -> 0x02D0 read as 33.5 -> 33.0 kWh).
+        uint32_t result = (uint32_t(buffer[offset]) << 16) | (uint32_t(buffer[offset + 1]) << 8) |
+                          buffer[offset + 2];
         return result / divisor;
     }
 
@@ -1648,7 +1670,7 @@ private:
             return;
         }
         if (power_consumption_ != nullptr) {
-            power_consumption_->publish_state(decode_power_nibbles_(buffer, 3, 3, 10.0f));
+            power_consumption_->publish_state(decode_power_uint24_(buffer, 3, 10.0f));
         }
     }
 
@@ -1657,7 +1679,7 @@ private:
             return;
         }
         if (current_power_ != nullptr) {
-            current_power_->publish_state(decode_power_nibbles_(buffer, 2, 3, 1000.0f));
+            current_power_->publish_state(decode_power_uint24_(buffer, 2, 1000.0f));
         }
     }
 
