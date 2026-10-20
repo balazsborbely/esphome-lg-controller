@@ -59,6 +59,8 @@ CONF_HUMIDITY = "humidity"
 CONF_FAN_OPERATION_TIME = "fan_operation_time"
 CONF_INDOOR_UNIT_OPERATION_TIME = "indoor_unit_operation_time"
 CONF_PRECISE_ROOM_TEMPERATURE = "precise_room_temperature"
+CONF_OVERCOOLING = "overcooling"
+CONF_COOLING_THERMAL_OFF_FAN = "cooling_thermal_off_fan"
 
 CONF_DEFROST = "defrost"
 CONF_PREHEAT = "preheat"
@@ -133,6 +135,9 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
             device_class=DEVICE_CLASS_TEMPERATURE,
             state_class=STATE_CLASS_MEASUREMENT,
         ),
+        # Read-only installer settings from the unit's 0xCB message.
+        cv.Optional(CONF_OVERCOOLING): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): sensor.sensor_schema(accuracy_decimals=0),
 
         cv.Required(CONF_DEFROST): binary_sensor.binary_sensor_schema(),
         cv.Required(CONF_PREHEAT): binary_sensor.binary_sensor_schema(),
@@ -202,6 +207,14 @@ async def to_code(config):
         precise_room_temperature = await sensor.new_sensor(config[CONF_PRECISE_ROOM_TEMPERATURE])
     else:
         precise_room_temperature = cg.nullptr
+    if CONF_OVERCOOLING in config:
+        overcooling = await sensor.new_sensor(config[CONF_OVERCOOLING])
+    else:
+        overcooling = cg.nullptr
+    if CONF_COOLING_THERMAL_OFF_FAN in config:
+        cooling_thermal_off_fan = await sensor.new_sensor(config[CONF_COOLING_THERMAL_OFF_FAN])
+    else:
+        cooling_thermal_off_fan = cg.nullptr
 
     defrost = await binary_sensor.new_binary_sensor(config[CONF_DEFROST])
     preheat = await binary_sensor.new_binary_sensor(config[CONF_PREHEAT])
@@ -220,6 +233,7 @@ async def to_code(config):
                            power_consumption, current_power,
                            humidity, fan_operation_time, indoor_unit_operation_time,
                            precise_room_temperature,
+                           overcooling, cooling_thermal_off_fan,
                            defrost, preheat, outdoor, auto_dry_active,
                            purifier, internal_thermistor, auto_dry,
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])

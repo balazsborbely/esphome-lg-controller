@@ -165,6 +165,8 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor* fan_operation_time_;
     esphome::sensor::Sensor* indoor_unit_operation_time_;
     esphome::sensor::Sensor* precise_room_temperature_;
+    esphome::sensor::Sensor* overcooling_;
+    esphome::sensor::Sensor* cooling_thermal_off_fan_;
     esphome::binary_sensor::BinarySensor& defrost_;
     esphome::binary_sensor::BinarySensor& preheat_;
     esphome::binary_sensor::BinarySensor& outdoor_;
@@ -390,6 +392,8 @@ public:
                  sensor::Sensor* fan_operation_time,
                  sensor::Sensor* indoor_unit_operation_time,
                  sensor::Sensor* precise_room_temperature,
+                 sensor::Sensor* overcooling,
+                 sensor::Sensor* cooling_thermal_off_fan,
                  binary_sensor::BinarySensor* defrost,
                  binary_sensor::BinarySensor* preheat,
                  binary_sensor::BinarySensor* outdoor,
@@ -420,6 +424,8 @@ public:
         fan_operation_time_(fan_operation_time),
         indoor_unit_operation_time_(indoor_unit_operation_time),
         precise_room_temperature_(precise_room_temperature),
+        overcooling_(overcooling),
+        cooling_thermal_off_fan_(cooling_thermal_off_fan),
         defrost_(*defrost),
         preheat_(*preheat),
         outdoor_(*outdoor),
@@ -1612,6 +1618,16 @@ private:
             overheating_select_.publish_state(*overheating_select_.at(overheating));
         } else {
             ESP_LOGE(TAG, "Unexpected overheating value: %u", overheating);
+        }
+
+        // Read-only for now. Byte 2 bits 6-7 = over cooling (installer setting 27), byte 9
+        // bits 6-7 = fan in cooling thermal off (installer setting 35). Outgoing 0xAB
+        // messages start from a copy of this message, so both are echoed back unchanged.
+        if (overcooling_ != nullptr) {
+            overcooling_->publish_state((buffer[2] >> 6) & 0b11);
+        }
+        if (cooling_thermal_off_fan_ != nullptr) {
+            cooling_thermal_off_fan_->publish_state((buffer[9] >> 6) & 0b11);
         }
 
         // Table mapping a byte value to degrees Celsius based on values displayed by PREMTB100.
