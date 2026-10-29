@@ -34,6 +34,7 @@ LgSwitch = lg_controller_ns.class_("LgSwitch", switch.Switch, cg.Component)
 
 CONF_FAHRENHEIT = "fahrenheit"
 CONF_IS_SLAVE_CONTROLLER = "is_slave_controller"
+CONF_TARGET_TEMPERATURE_STEP = "target_temperature_step"
 CONF_OVERCOOLING_SETTING = "overcooling_setting"
 
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
@@ -80,6 +81,9 @@ CONF_AUTO_DRY = "auto_dry"
 
 VANE_OPTIONS = ["0 (Default)", "1 (Up)", "2", "3", "4", "5", "6 (Down)"]
 OVERHEATING_OPTIONS = ["0 (Default)", "1 (+4C/+6C)", "2 (+2C/+4C)", "3 (-1C/+1C)", "4 (-0.5C/+0.5C)"]
+OVERCOOLING_OPTIONS = ["0 (Default: +0.5C/-0.5C)", "1 (+6C/+4C)", "2 (+4C/+2C)", "3 (+1C/-1C)"]
+TEMPERATURE_CONTROL_STEP_OPTIONS = ["0 (1C)", "1 (0.5C)"]
+COOLING_THERMAL_OFF_FAN_OPTIONS = ["0 (Fan Low)", "1 (Fan Off)", "2 (Fan Setting)"]
 
 CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
     {
@@ -87,6 +91,7 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
 
         cv.Required(CONF_FAHRENHEIT): cv.boolean,
         cv.Required(CONF_IS_SLAVE_CONTROLLER): cv.boolean,
+        cv.Optional(CONF_TARGET_TEMPERATURE_STEP, default=0.5): cv.one_of(0.5, 1.0, float=True),
         # Installer setting 27 to write to the unit (0-3). -1 or omitted = echo the unit's value.
         cv.Optional(CONF_OVERCOOLING_SETTING, default=-1): cv.int_range(min=-1, max=3),
 
@@ -144,15 +149,15 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
             device_class=DEVICE_CLASS_TEMPERATURE,
             state_class=STATE_CLASS_MEASUREMENT,
         ),
-        # Read-only installer settings from the unit's 0xCB message.
-        cv.Optional(CONF_OVERCOOLING): sensor.sensor_schema(accuracy_decimals=0),
-        cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): sensor.sensor_schema(accuracy_decimals=0),
-        # Read-only installer settings: 17 (0 = 1 °C, 1 = 0.5 °C control), 32 (static pressure
+        # Installer setting 27 (overcooling) as select dropdown.
+        cv.Optional(CONF_OVERCOOLING): select.select_schema(LgSelect),
+        cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): select.select_schema(LgSelect),
+        # Installer settings: 17 (0 = 1 °C, 1 = 0.5 °C control), 32 (static pressure
         # step), 46 (continuous fan), 51 (temperature-based fan speed auto).
-        cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): select.select_schema(LgSelect),
         cv.Optional(CONF_STATIC_PRESSURE_STEP): sensor.sensor_schema(accuracy_decimals=0),
-        cv.Optional(CONF_CONTINUOUS_FAN): sensor.sensor_schema(accuracy_decimals=0),
-        cv.Optional(CONF_TEMPERATURE_BASED_FAN_AUTO): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_CONTINUOUS_FAN): switch.switch_schema(LgSwitch),
+        cv.Optional(CONF_TEMPERATURE_BASED_FAN_AUTO): switch.switch_schema(LgSwitch),
         # Raw hex of the unit's 0xCD frame and 0xCE.00/10/11/12 sub-frames, which are only
         # partly documented. Published only when they change.
         cv.Optional(CONF_ADVANCED_SETTINGS_RAW): text_sensor.text_sensor_schema(),
@@ -227,11 +232,13 @@ async def to_code(config):
     else:
         precise_room_temperature = cg.nullptr
     if CONF_OVERCOOLING in config:
-        overcooling = await sensor.new_sensor(config[CONF_OVERCOOLING])
+        overcooling = await select.new_select(config[CONF_OVERCOOLING], options=OVERCOOLING_OPTIONS)
     else:
         overcooling = cg.nullptr
     if CONF_COOLING_THERMAL_OFF_FAN in config:
-        cooling_thermal_off_fan = await sensor.new_sensor(config[CONF_COOLING_THERMAL_OFF_FAN])
+        cooling_thermal_off_fan = await select.new_select(
+            config[CONF_COOLING_THERMAL_OFF_FAN], options=COOLING_THERMAL_OFF_FAN_OPTIONS
+        )
     else:
         cooling_thermal_off_fan = cg.nullptr
 
@@ -257,11 +264,21 @@ async def to_code(config):
                            purifier, internal_thermistor, auto_dry,
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])
     cg.add(var.set_overcooling_target(config[CONF_OVERCOOLING_SETTING]))
-    for key in (CONF_TEMPERATURE_CONTROL_STEP, CONF_STATIC_PRESSURE_STEP,
-                CONF_CONTINUOUS_FAN, CONF_TEMPERATURE_BASED_FAN_AUTO):
-        if key in config:
-            sens = await sensor.new_sensor(config[key])
-            cg.add(getattr(var, f"set_{key}_sensor")(sens))
+    cg.add(var.set_target_temperature_step(config[CONF_TARGET_TEMPERATURE_STEP]))
+    if CONF_TEMPERATURE_CONTROL_STEP in config:
+        step_sel = await select.new_select(
+            config[CONF_TEMPERATURE_CONTROL_STEP], options=TEMPERATURE_CONTROL_STEP_OPTIONS
+        )
+        cg.add(var.set_temperature_control_step_select(step_sel))
+    if CONF_STATIC_PRESSURE_STEP in config:
+        sens = await sensor.new_sensor(config[CONF_STATIC_PRESSURE_STEP])
+        cg.add(var.set_static_pressure_step_sensor(sens))
+    if CONF_CONTINUOUS_FAN in config:
+        cont_fan = await switch.new_switch(config[CONF_CONTINUOUS_FAN])
+        cg.add(var.set_continuous_fan_switch(cont_fan))
+    if CONF_TEMPERATURE_BASED_FAN_AUTO in config:
+        fan_auto = await switch.new_switch(config[CONF_TEMPERATURE_BASED_FAN_AUTO])
+        cg.add(var.set_temperature_based_fan_auto_switch(fan_auto))
     for key in (CONF_ADVANCED_SETTINGS_RAW, CONF_EXTENDED_SETTINGS_RAW):
         if key in config:
             sens = await text_sensor.new_text_sensor(config[key])
