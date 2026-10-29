@@ -34,6 +34,7 @@ LgSwitch = lg_controller_ns.class_("LgSwitch", switch.Switch, cg.Component)
 
 CONF_FAHRENHEIT = "fahrenheit"
 CONF_IS_SLAVE_CONTROLLER = "is_slave_controller"
+CONF_OVERCOOLING_SETTING = "overcooling_setting"
 
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
 
@@ -80,6 +81,8 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
 
         cv.Required(CONF_FAHRENHEIT): cv.boolean,
         cv.Required(CONF_IS_SLAVE_CONTROLLER): cv.boolean,
+        # Installer setting 27 to write to the unit (0-3). -1 or omitted = echo the unit's value.
+        cv.Optional(CONF_OVERCOOLING_SETTING, default=-1): cv.int_range(min=-1, max=3),
 
         cv.Optional(CONF_TEMPERATURE_SENSOR): cv.use_id(sensor.Sensor),
 
@@ -237,6 +240,7 @@ async def to_code(config):
                            defrost, preheat, outdoor, auto_dry_active,
                            purifier, internal_thermistor, auto_dry,
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])
+    cg.add(var.set_overcooling_target(config[CONF_OVERCOOLING_SETTING]))
     await climate.register_climate(var, config)
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
