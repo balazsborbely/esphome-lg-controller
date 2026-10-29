@@ -1,12 +1,28 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import pins
-from esphome.components import binary_sensor, climate, number, select, sensor, switch, uart
-from esphome.const import CONF_ID, CONF_RX_PIN, CONF_INTERNAL
+from esphome.components import binary_sensor, climate, number, select, sensor, switch, text_sensor, uart
+from esphome.const import (
+    CONF_ID,
+    CONF_RX_PIN,
+    CONF_INTERNAL,
+    DEVICE_CLASS_DURATION,
+    DEVICE_CLASS_ENERGY,
+    DEVICE_CLASS_HUMIDITY,
+    DEVICE_CLASS_POWER,
+    DEVICE_CLASS_TEMPERATURE,
+    STATE_CLASS_MEASUREMENT,
+    STATE_CLASS_TOTAL_INCREASING,
+    UNIT_CELSIUS,
+    UNIT_HOUR,
+    UNIT_KILOWATT,
+    UNIT_KILOWATT_HOURS,
+    UNIT_PERCENT,
+)
 
 CODEOWNERS = ["JanM321"]
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["binary_sensor", "number", "switch", "sensor", "select"]
+AUTO_LOAD = ["binary_sensor", "number", "switch", "sensor", "select", "text_sensor"]
 
 lg_controller_ns = cg.esphome_ns.namespace("lg_controller")
 LgController = lg_controller_ns.class_(
@@ -18,6 +34,7 @@ LgSwitch = lg_controller_ns.class_("LgSwitch", switch.Switch, cg.Component)
 
 CONF_FAHRENHEIT = "fahrenheit"
 CONF_IS_SLAVE_CONTROLLER = "is_slave_controller"
+CONF_OVERCOOLING_SETTING = "overcooling_setting"
 
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
 
@@ -37,6 +54,20 @@ CONF_ERROR_CODE = "error_code"
 CONF_PIPE_TEMP_IN = "pipe_temp_in"
 CONF_PIPE_TEMP_MID = "pipe_temp_mid"
 CONF_PIPE_TEMP_OUT = "pipe_temp_out"
+CONF_POWER_CONSUMPTION = "power_consumption"
+CONF_CURRENT_POWER = "current_power"
+CONF_HUMIDITY = "humidity"
+CONF_FAN_OPERATION_TIME = "fan_operation_time"
+CONF_INDOOR_UNIT_OPERATION_TIME = "indoor_unit_operation_time"
+CONF_PRECISE_ROOM_TEMPERATURE = "precise_room_temperature"
+CONF_OVERCOOLING = "overcooling"
+CONF_COOLING_THERMAL_OFF_FAN = "cooling_thermal_off_fan"
+CONF_TEMPERATURE_CONTROL_STEP = "temperature_control_step"
+CONF_STATIC_PRESSURE_STEP = "static_pressure_step"
+CONF_CONTINUOUS_FAN = "continuous_fan"
+CONF_TEMPERATURE_BASED_FAN_AUTO = "temperature_based_fan_auto"
+CONF_ADVANCED_SETTINGS_RAW = "advanced_settings_raw"
+CONF_EXTENDED_SETTINGS_RAW = "extended_settings_raw"
 
 CONF_DEFROST = "defrost"
 CONF_PREHEAT = "preheat"
@@ -56,6 +87,8 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
 
         cv.Required(CONF_FAHRENHEIT): cv.boolean,
         cv.Required(CONF_IS_SLAVE_CONTROLLER): cv.boolean,
+        # Installer setting 27 to write to the unit (0-3). -1 or omitted = echo the unit's value.
+        cv.Optional(CONF_OVERCOOLING_SETTING, default=-1): cv.int_range(min=-1, max=3),
 
         cv.Optional(CONF_TEMPERATURE_SENSOR): cv.use_id(sensor.Sensor),
 
@@ -71,10 +104,59 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
         cv.Required(CONF_FAN_SPEED_HIGH): number.number_schema(LgNumber),
         cv.Required(CONF_SLEEP_TIMER): number.number_schema(LgNumber),
 
-        cv.Required(CONF_ERROR_CODE): sensor.sensor_schema(),
+        cv.Required(CONF_ERROR_CODE): sensor.sensor_schema(accuracy_decimals=0),
         cv.Required(CONF_PIPE_TEMP_IN): sensor.sensor_schema(),
         cv.Required(CONF_PIPE_TEMP_MID): sensor.sensor_schema(),
         cv.Required(CONF_PIPE_TEMP_OUT): sensor.sensor_schema(),
+        cv.Optional(CONF_POWER_CONSUMPTION): sensor.sensor_schema(
+            unit_of_measurement=UNIT_KILOWATT_HOURS,
+            accuracy_decimals=1,
+            device_class=DEVICE_CLASS_ENERGY,
+            state_class=STATE_CLASS_TOTAL_INCREASING,
+        ),
+        cv.Optional(CONF_CURRENT_POWER): sensor.sensor_schema(
+            unit_of_measurement=UNIT_KILOWATT,
+            accuracy_decimals=1,
+            device_class=DEVICE_CLASS_POWER,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_HUMIDITY): sensor.sensor_schema(
+            unit_of_measurement=UNIT_PERCENT,
+            accuracy_decimals=0,
+            device_class=DEVICE_CLASS_HUMIDITY,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        cv.Optional(CONF_FAN_OPERATION_TIME): sensor.sensor_schema(
+            unit_of_measurement=UNIT_HOUR,
+            accuracy_decimals=0,
+            device_class=DEVICE_CLASS_DURATION,
+            state_class=STATE_CLASS_TOTAL_INCREASING,
+        ),
+        cv.Optional(CONF_INDOOR_UNIT_OPERATION_TIME): sensor.sensor_schema(
+            unit_of_measurement=UNIT_HOUR,
+            accuracy_decimals=0,
+            device_class=DEVICE_CLASS_DURATION,
+            state_class=STATE_CLASS_TOTAL_INCREASING,
+        ),
+        cv.Optional(CONF_PRECISE_ROOM_TEMPERATURE): sensor.sensor_schema(
+            unit_of_measurement=UNIT_CELSIUS,
+            accuracy_decimals=1,
+            device_class=DEVICE_CLASS_TEMPERATURE,
+            state_class=STATE_CLASS_MEASUREMENT,
+        ),
+        # Read-only installer settings from the unit's 0xCB message.
+        cv.Optional(CONF_OVERCOOLING): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): sensor.sensor_schema(accuracy_decimals=0),
+        # Read-only installer settings: 17 (0 = 1 °C, 1 = 0.5 °C control), 32 (static pressure
+        # step), 46 (continuous fan), 51 (temperature-based fan speed auto).
+        cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_STATIC_PRESSURE_STEP): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_CONTINUOUS_FAN): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_TEMPERATURE_BASED_FAN_AUTO): sensor.sensor_schema(accuracy_decimals=0),
+        # Raw hex of the unit's 0xCD frame and 0xCE.00/10/11/12 sub-frames, which are only
+        # partly documented. Published only when they change.
+        cv.Optional(CONF_ADVANCED_SETTINGS_RAW): text_sensor.text_sensor_schema(),
+        cv.Optional(CONF_EXTENDED_SETTINGS_RAW): text_sensor.text_sensor_schema(),
 
         cv.Required(CONF_DEFROST): binary_sensor.binary_sensor_schema(),
         cv.Required(CONF_PREHEAT): binary_sensor.binary_sensor_schema(),
@@ -120,6 +202,38 @@ async def to_code(config):
     pipe_temp_in = await sensor.new_sensor(config[CONF_PIPE_TEMP_IN])
     pipe_temp_mid = await sensor.new_sensor(config[CONF_PIPE_TEMP_MID])
     pipe_temp_out = await sensor.new_sensor(config[CONF_PIPE_TEMP_OUT])
+    if CONF_POWER_CONSUMPTION in config:
+        power_consumption = await sensor.new_sensor(config[CONF_POWER_CONSUMPTION])
+    else:
+        power_consumption = cg.nullptr
+    if CONF_CURRENT_POWER in config:
+        current_power = await sensor.new_sensor(config[CONF_CURRENT_POWER])
+    else:
+        current_power = cg.nullptr
+    if CONF_HUMIDITY in config:
+        humidity = await sensor.new_sensor(config[CONF_HUMIDITY])
+    else:
+        humidity = cg.nullptr
+    if CONF_FAN_OPERATION_TIME in config:
+        fan_operation_time = await sensor.new_sensor(config[CONF_FAN_OPERATION_TIME])
+    else:
+        fan_operation_time = cg.nullptr
+    if CONF_INDOOR_UNIT_OPERATION_TIME in config:
+        indoor_unit_operation_time = await sensor.new_sensor(config[CONF_INDOOR_UNIT_OPERATION_TIME])
+    else:
+        indoor_unit_operation_time = cg.nullptr
+    if CONF_PRECISE_ROOM_TEMPERATURE in config:
+        precise_room_temperature = await sensor.new_sensor(config[CONF_PRECISE_ROOM_TEMPERATURE])
+    else:
+        precise_room_temperature = cg.nullptr
+    if CONF_OVERCOOLING in config:
+        overcooling = await sensor.new_sensor(config[CONF_OVERCOOLING])
+    else:
+        overcooling = cg.nullptr
+    if CONF_COOLING_THERMAL_OFF_FAN in config:
+        cooling_thermal_off_fan = await sensor.new_sensor(config[CONF_COOLING_THERMAL_OFF_FAN])
+    else:
+        cooling_thermal_off_fan = cg.nullptr
 
     defrost = await binary_sensor.new_binary_sensor(config[CONF_DEFROST])
     preheat = await binary_sensor.new_binary_sensor(config[CONF_PREHEAT])
@@ -135,9 +249,23 @@ async def to_code(config):
                            fan_speed_slow, fan_speed_low, fan_speed_medium, fan_speed_high,
                            sleep_timer,
                            error_code, pipe_temp_in, pipe_temp_mid, pipe_temp_out,
+                           power_consumption, current_power,
+                           humidity, fan_operation_time, indoor_unit_operation_time,
+                           precise_room_temperature,
+                           overcooling, cooling_thermal_off_fan,
                            defrost, preheat, outdoor, auto_dry_active,
                            purifier, internal_thermistor, auto_dry,
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])
+    cg.add(var.set_overcooling_target(config[CONF_OVERCOOLING_SETTING]))
+    for key in (CONF_TEMPERATURE_CONTROL_STEP, CONF_STATIC_PRESSURE_STEP,
+                CONF_CONTINUOUS_FAN, CONF_TEMPERATURE_BASED_FAN_AUTO):
+        if key in config:
+            sens = await sensor.new_sensor(config[key])
+            cg.add(getattr(var, f"set_{key}_sensor")(sens))
+    for key in (CONF_ADVANCED_SETTINGS_RAW, CONF_EXTENDED_SETTINGS_RAW):
+        if key in config:
+            sens = await text_sensor.new_text_sensor(config[key])
+            cg.add(getattr(var, f"set_{key}_text_sensor")(sens))
     await climate.register_climate(var, config)
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)

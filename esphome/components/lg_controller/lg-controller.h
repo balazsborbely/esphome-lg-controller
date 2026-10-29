@@ -4,6 +4,7 @@
 
 #include "esphome.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 
 static const char* const TAG = "lg-controller";
 
@@ -159,6 +160,23 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor& pipe_temp_in_;
     esphome::sensor::Sensor& pipe_temp_mid_;
     esphome::sensor::Sensor& pipe_temp_out_;
+    esphome::sensor::Sensor* power_consumption_;
+    esphome::sensor::Sensor* current_power_;
+    esphome::sensor::Sensor* humidity_;
+    esphome::sensor::Sensor* fan_operation_time_;
+    esphome::sensor::Sensor* indoor_unit_operation_time_;
+    esphome::sensor::Sensor* precise_room_temperature_;
+    esphome::sensor::Sensor* overcooling_;
+    esphome::sensor::Sensor* cooling_thermal_off_fan_;
+    esphome::sensor::Sensor* temperature_control_step_ = nullptr;
+    esphome::sensor::Sensor* static_pressure_step_ = nullptr;
+    esphome::sensor::Sensor* continuous_fan_ = nullptr;
+    esphome::sensor::Sensor* temperature_based_fan_auto_ = nullptr;
+    esphome::text_sensor::TextSensor* advanced_settings_raw_ = nullptr;
+    esphome::text_sensor::TextSensor* extended_settings_raw_ = nullptr;
+
+    // Last 0xCE.00/10/11/12 sub-frames from the unit, for extended_settings_raw.
+    uint8_t last_recv_type_e_settings_[4][MsgLen] = {};
     esphome::binary_sensor::BinarySensor& defrost_;
     esphome::binary_sensor::BinarySensor& preheat_;
     esphome::binary_sensor::BinarySensor& outdoor_;
@@ -211,6 +229,18 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     uint8_t fan_speed_[4] = {0,0,0,0};
     uint8_t overheating_ = 0;
 
+    // Installer setting 27 (over cooling) to write, or -1 to echo the unit's value. If the
+    // unit doesn't take it, give up after a few attempts rather than resend forever.
+    int8_t overcooling_target_ = -1;
+    uint8_t overcooling_write_attempts_ = 0;
+
+    // Fan values 5 (low-medium) and 6 (medium-high) have no standard HA fan
+    // mode. They are shown as the next lower standard mode, and the raw value
+    // is kept here so that our next status message sends it back unchanged
+    // instead of overwriting a speed picked at the wall remote. 0xFF = none.
+    uint8_t unit_fan_raw_ = 0xFF;
+    climate::ClimateFanMode unit_fan_mapped_ = climate::CLIMATE_FAN_MEDIUM;
+
     optional<uint32_t> sleep_timer_target_millis_{};
     bool active_reservation_ = false;
     bool ignore_callbacks_ = false;
@@ -236,6 +266,7 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
         FAN_MEDIUM,
         FAN_MEDIUM_HIGH,
         FAN_HIGH,
+        FAN_POWER,
         MODE_HEATING,
         MODE_FAN,
         MODE_AUTO,
@@ -260,6 +291,8 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
                 return (nvs_storage_.capabilities_message[6] & 0x10) != 0;
             case LgCapability::FAN_HIGH:
                 return true;
+            case LgCapability::FAN_POWER:
+                return (nvs_storage_.capabilities_message[3] & 0x02) != 0;
             case LgCapability::MODE_HEATING:
                 return (nvs_storage_.capabilities_message[2] & 0x40) != 0;
             case LgCapability::MODE_FAN:
@@ -291,6 +324,7 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
         fan_modes.insert(climate::CLIMATE_FAN_MEDIUM);
         fan_modes.insert(climate::CLIMATE_FAN_HIGH);
         fan_modes.insert(climate::CLIMATE_FAN_AUTO);
+        fan_modes.insert(climate::CLIMATE_FAN_FOCUS);
         
         climate::ClimateSwingModeMask swing_modes;
         swing_modes.insert(climate::CLIMATE_SWING_OFF);
@@ -301,7 +335,7 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
         supported_traits_.set_supported_modes(device_modes);
         supported_traits_.set_supported_fan_modes(fan_modes);
         supported_traits_.set_supported_swing_modes(swing_modes);
-        supported_traits_.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE);
+        supported_traits_.add_feature_flags(climate::CLIMATE_SUPPORTS_CURRENT_TEMPERATURE | climate::CLIMATE_SUPPORTS_ACTION);
         supported_traits_.set_visual_min_temperature(MIN_TEMP_SETPOINT);
         supported_traits_.set_visual_max_temperature(MAX_TEMP_SETPOINT);
         supported_traits_.set_visual_current_temperature_step(fahrenheit_ ? 1 : 0.5);
@@ -334,6 +368,8 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
                 override_fan_modes.insert(climate::CLIMATE_FAN_MEDIUM);
             if (parse_capability(LgCapability::FAN_HIGH))
                 override_fan_modes.insert(climate::CLIMATE_FAN_HIGH);
+            if (parse_capability(LgCapability::FAN_POWER))
+                override_fan_modes.insert(climate::CLIMATE_FAN_FOCUS);
             supported_traits_.set_supported_fan_modes(override_fan_modes);
 
             climate::ClimateSwingModeMask override_swing_modes;
@@ -349,6 +385,16 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     }
 
 public:
+    void set_overcooling_target(int value) {
+        overcooling_target_ = value;
+    }
+    void set_temperature_control_step_sensor(sensor::Sensor* s) { temperature_control_step_ = s; }
+    void set_static_pressure_step_sensor(sensor::Sensor* s) { static_pressure_step_ = s; }
+    void set_continuous_fan_sensor(sensor::Sensor* s) { continuous_fan_ = s; }
+    void set_temperature_based_fan_auto_sensor(sensor::Sensor* s) { temperature_based_fan_auto_ = s; }
+    void set_advanced_settings_raw_text_sensor(text_sensor::TextSensor* s) { advanced_settings_raw_ = s; }
+    void set_extended_settings_raw_text_sensor(text_sensor::TextSensor* s) { extended_settings_raw_ = s; }
+
     LgController(InternalGPIOPin* rx_pin,
                  sensor::Sensor* temperature_sensor,
                  LgSelect* vane_select_1,
@@ -365,6 +411,14 @@ public:
                  sensor::Sensor* pipe_temp_in,
                  sensor::Sensor* pipe_temp_mid,
                  sensor::Sensor* pipe_temp_out,
+                 sensor::Sensor* power_consumption,
+                 sensor::Sensor* current_power,
+                 sensor::Sensor* humidity,
+                 sensor::Sensor* fan_operation_time,
+                 sensor::Sensor* indoor_unit_operation_time,
+                 sensor::Sensor* precise_room_temperature,
+                 sensor::Sensor* overcooling,
+                 sensor::Sensor* cooling_thermal_off_fan,
                  binary_sensor::BinarySensor* defrost,
                  binary_sensor::BinarySensor* preheat,
                  binary_sensor::BinarySensor* outdoor,
@@ -389,6 +443,14 @@ public:
         pipe_temp_in_(*pipe_temp_in),
         pipe_temp_mid_(*pipe_temp_mid),
         pipe_temp_out_(*pipe_temp_out),
+        power_consumption_(power_consumption),
+        current_power_(current_power),
+        humidity_(humidity),
+        fan_operation_time_(fan_operation_time),
+        indoor_unit_operation_time_(indoor_unit_operation_time),
+        precise_room_temperature_(precise_room_temperature),
+        overcooling_(overcooling),
+        cooling_thermal_off_fan_(cooling_thermal_off_fan),
         defrost_(*defrost),
         preheat_(*preheat),
         outdoor_(*outdoor),
@@ -511,6 +573,13 @@ public:
         if (call.get_mode().has_value()) {
             this->mode = *call.get_mode();
             operation_mode_changed_ = true;
+            if (this->mode == climate::CLIMATE_MODE_OFF) {
+                this->action = climate::CLIMATE_ACTION_OFF;
+            } else if (this->mode == climate::CLIMATE_MODE_FAN_ONLY) {
+                this->action = climate::CLIMATE_ACTION_FAN;
+            } else if (this->action == climate::CLIMATE_ACTION_OFF) {
+                this->action = climate::CLIMATE_ACTION_IDLE;
+            }
         }
         if (call.get_target_temperature().has_value()) {
             this->target_temperature = get_roundtrip_target_temperature
@@ -518,6 +587,7 @@ public:
         }
         if (call.get_fan_mode().has_value()) {
             this->fan_mode = *call.get_fan_mode();
+            unit_fan_raw_ = 0xFF;
         }
         if (call.get_swing_mode().has_value()) {
             set_swing_mode(*call.get_swing_mode());
@@ -618,6 +688,46 @@ public:
     }
 
 private:
+    bool set_action_from_status_(bool outdoor_on, bool preheating, bool defrosting, uint8_t temperature_flags) {
+        climate::ClimateAction action = climate::CLIMATE_ACTION_IDLE;
+        if (this->mode == climate::CLIMATE_MODE_OFF) {
+            action = climate::CLIMATE_ACTION_OFF;
+        } else if (defrosting) {
+            action = climate::CLIMATE_ACTION_DEFROSTING;
+        } else if (this->mode == climate::CLIMATE_MODE_FAN_ONLY) {
+            action = climate::CLIMATE_ACTION_FAN;
+        } else if (!outdoor_on || preheating) {
+            action = climate::CLIMATE_ACTION_IDLE;
+        } else {
+            switch (this->mode) {
+                case climate::CLIMATE_MODE_COOL:
+                    action = climate::CLIMATE_ACTION_COOLING;
+                    break;
+                case climate::CLIMATE_MODE_DRY:
+                    action = climate::CLIMATE_ACTION_DRYING;
+                    break;
+                case climate::CLIMATE_MODE_HEAT:
+                    action = climate::CLIMATE_ACTION_HEATING;
+                    break;
+                case climate::CLIMATE_MODE_HEAT_COOL:
+                    if (temperature_flags & 0x40) {
+                        action = climate::CLIMATE_ACTION_COOLING;
+                    } else if (temperature_flags & 0x80) {
+                        action = climate::CLIMATE_ACTION_HEATING;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        if (this->action == action) {
+            return false;
+        }
+        this->action = action;
+        return true;
+    }
+
     // Sets position of vane index (1-4) to position (0-6).
     void set_vane_position(int index, int position) {
         if (index < 1 || index > 4) {
@@ -793,7 +903,10 @@ private:
         }
         
         // Fix: Check if fan_mode has a value before dereferencing
-        if (this->fan_mode.has_value()) {
+        if (this->fan_mode.has_value() && unit_fan_raw_ != 0xFF &&
+            this->fan_mode.value() == unit_fan_mapped_) {
+            b |= unit_fan_raw_ << 5;
+        } else if (this->fan_mode.has_value()) {
             switch (this->fan_mode.value()) {
                 case climate::CLIMATE_FAN_LOW:
                     b |= 0 << 5;
@@ -809,6 +922,9 @@ private:
                     break;
                 case climate::CLIMATE_FAN_QUIET:
                     b |= 4 << 5;
+                    break;
+                case climate::CLIMATE_FAN_FOCUS:
+                    b |= 7 << 5;
                     break;
                 default:
                     ESP_LOGE(TAG, "unknown fan mode, using Medium");
@@ -1007,6 +1123,11 @@ private:
         // Byte 2 stores installer setting 15.
         send_buf_[2] = (send_buf_[2] & 0xC7) | (overheating_ << 3);
 
+        // Byte 2 bits 6-7 store installer setting 27, if we're configured to write it.
+        if (overcooling_target_ >= 0) {
+            send_buf_[2] = (send_buf_[2] & 0x3F) | (overcooling_target_ << 6);
+        }
+
         send_buf_[12] = calc_checksum(send_buf_);
 
         ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
@@ -1089,6 +1210,18 @@ private:
             case 3: // 0xCB/AB/2B
                 process_type_b_settings_message(*sender, buffer);
                 break;
+            case 4: // 0xCC/AC/2C
+                process_type_c_status_message(*sender, buffer);
+                break;
+            case 5: // 0xCD/AD/2D
+                process_type_d_settings_message(*sender, buffer);
+                break;
+            case 6: // 0xCE/AE/2E
+                process_type_e_status_message(*sender, buffer);
+                break;
+            case 7: // 0xCF/AF/2F
+                process_type_f_status_message(*sender, buffer);
+                break;
             default:
                 return;
         }
@@ -1169,6 +1302,15 @@ private:
             case 4:
                 new_fan_mode = climate::CLIMATE_FAN_QUIET;
                 break;
+            case 5: // low-medium, see unit_fan_raw_
+                new_fan_mode = climate::CLIMATE_FAN_LOW;
+                break;
+            case 6: // medium-high, see unit_fan_raw_
+                new_fan_mode = climate::CLIMATE_FAN_MEDIUM;
+                break;
+            case 7:
+                new_fan_mode = climate::CLIMATE_FAN_FOCUS;
+                break;
             default:
                 ESP_LOGE(TAG, "received unexpected fan mode from AC (%u)", fan_val);
                 return;
@@ -1231,6 +1373,12 @@ private:
 
                 this->mode = new_mode;
                 this->fan_mode = new_fan_mode;
+                if (fan_val == 5 || fan_val == 6) {
+                    unit_fan_raw_ = fan_val;
+                    unit_fan_mapped_ = new_fan_mode;
+                } else {
+                    unit_fan_raw_ = 0xFF;
+                }
                 if (swing_mode_changed) {
                     // Avoid calling set_swing_mode unless the swing
                     // mode has actually changed, since it sends a
@@ -1298,7 +1446,8 @@ private:
         waiting_for_first_status = false;
 
         defrost_.publish_state(buffer[3] & 0x4);
-        preheat_.publish_state(buffer[3] & 0x8);
+        bool preheating = buffer[3] & 0x8;
+        preheat_.publish_state(preheating);
 
         if (sender == MessageSender::Unit) {
             error_code_.publish_state(buffer[11]);
@@ -1345,6 +1494,21 @@ private:
             }
         }
 
+        // NOTE: PR #172 (upstream) had early "ignoring because pending
+        // change/send" returns here (each still updating the action
+        // telemetry before bailing), matching the pre-#168 control flow.
+        // #168's rearchitecture already removed the equivalent guard from
+        // this location -- the same "don't overwrite a pending outgoing
+        // change" concern is now handled earlier in this function via
+        // user_changed_settings_. Reintroducing pending_status_change_/
+        // pending_send_ checks here would be redundant against that and
+        // would double-guard against #168's now-different semantics for
+        // those flags. Net effect of dropping this hunk: action telemetry
+        // simply updates on the next status message instead of this one,
+        // in the narrow case where this one was a self-echo of a pending
+        // change -- not lost, just deferred by one cycle. The normal-path
+        // set_action_from_status_() call below (unconflicted, from #172)
+        // still runs every time.
         if (sender != MessageSender::Slave) {
             memcpy(last_recv_status_, buffer, MsgLen);
         }
@@ -1359,6 +1523,7 @@ private:
         }
         ignore_callbacks_ = false;
 
+        set_action_from_status_(outdoor_.state, preheating, defrost_.state, buffer[7]);
         publish_state();
     }
 
@@ -1488,6 +1653,36 @@ private:
             ESP_LOGE(TAG, "Unexpected overheating value: %u", overheating);
         }
 
+        // Byte 2 bits 6-7 = over cooling (installer setting 27), byte 9 bits 6-7 = fan in
+        // cooling thermal off (installer setting 35). Outgoing 0xAB messages start from a copy
+        // of this message, so both are echoed back unchanged unless overcooling_setting is set.
+        uint8_t overcooling = (buffer[2] >> 6) & 0b11;
+        if (overcooling_ != nullptr) {
+            overcooling_->publish_state(overcooling);
+        }
+        if (overcooling_target_ >= 0 && overcooling != overcooling_target_) {
+            if (overcooling_write_attempts_ < 3) {
+                overcooling_write_attempts_++;
+                ESP_LOGD(TAG, "Setting over cooling installer setting: %u -> %d (attempt %u)",
+                         overcooling, overcooling_target_, overcooling_write_attempts_);
+                pending_type_b_settings_change_ = true;
+            } else if (overcooling_write_attempts_ == 3) {
+                overcooling_write_attempts_++;
+                ESP_LOGE(TAG, "Unit did not accept over cooling %d (still %u)", overcooling_target_, overcooling);
+            }
+        }
+        if (cooling_thermal_off_fan_ != nullptr) {
+            cooling_thermal_off_fan_->publish_state((buffer[9] >> 6) & 0b11);
+        }
+        // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
+        if (temperature_control_step_ != nullptr) {
+            temperature_control_step_->publish_state((buffer[6] >> 2) & 0b1);
+        }
+        // Byte 10 bits 0-3 = static pressure step (installer setting 32).
+        if (static_pressure_step_ != nullptr) {
+            static_pressure_step_->publish_state(buffer[10] & 0x0F);
+        }
+
         // Table mapping a byte value to degrees Celsius based on values displayed by PREMTB100.
         // INT8_MIN indicates an invalid value.
         static constexpr int8_t PipeTempTable[] = {
@@ -1530,6 +1725,118 @@ private:
         }
     }
 
+    static float decode_power_uint24_(const uint8_t* buffer, size_t offset, float divisor) {
+        // Plain big-endian 24-bit integers, per the #170 review: CF.02.00.02.29 = 553 W matched
+        // the LG app (0.55 kW). The earlier nibble-decimal decode made the 0xCC counter go
+        // backwards when a low nibble rolled F->0 (0x02CF -> 0x02D0 read as 33.5 -> 33.0 kWh).
+        uint32_t result = (uint32_t(buffer[offset]) << 16) | (uint32_t(buffer[offset + 1]) << 8) |
+                          buffer[offset + 2];
+        return result / divisor;
+    }
+
+    void process_type_c_status_message(MessageSender sender, const uint8_t* buffer) {
+        if (sender != MessageSender::Unit) {
+            return;
+        }
+        if (power_consumption_ != nullptr) {
+            power_consumption_->publish_state(decode_power_uint24_(buffer, 3, 10.0f));
+        }
+    }
+
+    void process_type_f_status_message(MessageSender sender, const uint8_t* buffer) {
+        if (sender != MessageSender::Unit) {
+            return;
+        }
+        if (current_power_ != nullptr) {
+            current_power_->publish_state(decode_power_uint24_(buffer, 2, 1000.0f));
+        }
+    }
+
+    static uint16_t decode_uint16_(const uint8_t* buffer, size_t offset) {
+        return (uint16_t(buffer[offset]) << 8) | buffer[offset + 1];
+    }
+
+    static std::string format_frame_(const uint8_t* buffer) {
+        char hex[MsgLen * 3];
+        for (size_t i = 0; i < MsgLen; i++) {
+            snprintf(hex + i * 3, 4, i + 1 < MsgLen ? "%02X." : "%02X", buffer[i]);
+        }
+        return std::string(hex);
+    }
+
+    static void publish_if_changed_(text_sensor::TextSensor* sensor, const std::string& value) {
+        if (sensor != nullptr && (!sensor->has_state() || sensor->get_state() != value)) {
+            sensor->publish_state(value);
+        }
+    }
+
+    // Type 5 (0xCD): advanced installer settings, mostly undocumented. Raw only.
+    void process_type_d_settings_message(MessageSender sender, const uint8_t* buffer) {
+        if (sender != MessageSender::Unit) {
+            return;
+        }
+        publish_if_changed_(advanced_settings_raw_, format_frame_(buffer));
+    }
+
+    void process_type_e_settings_message(const uint8_t* buffer) {
+        int slot;
+        switch (buffer[1]) {
+            case 0x00: slot = 0; break;
+            case 0x10: slot = 1; break;
+            case 0x11: slot = 2; break;
+            case 0x12: slot = 3; break;
+            default: return;
+        }
+        memcpy(last_recv_type_e_settings_[slot], buffer, MsgLen);
+
+        // 0xCE.10 byte 4: bit 1 = continuous fan (installer setting 46), bit 2 =
+        // temperature-based fan speed auto (51).
+        if (buffer[1] == 0x10) {
+            if (continuous_fan_ != nullptr) {
+                continuous_fan_->publish_state((buffer[4] >> 1) & 0b1);
+            }
+            if (temperature_based_fan_auto_ != nullptr) {
+                temperature_based_fan_auto_->publish_state((buffer[4] >> 2) & 0b1);
+            }
+        }
+
+        // One string for all four sub-frames, those not yet received left out.
+        std::string all;
+        for (auto& frame : last_recv_type_e_settings_) {
+            if (frame[0] == 0) {
+                continue;
+            }
+            if (!all.empty()) {
+                all += " ";
+            }
+            all += format_frame_(frame);
+        }
+        publish_if_changed_(extended_settings_raw_, all);
+    }
+
+    void process_type_e_status_message(MessageSender sender, const uint8_t* buffer) {
+        if (sender == MessageSender::Unit && buffer[1] != 0x80) {
+            process_type_e_settings_message(buffer);
+            return;
+        }
+        if (sender == MessageSender::Slave || buffer[1] != 0x80) {
+            return;
+        }
+
+        if (humidity_ != nullptr) {
+            humidity_->publish_state(buffer[2]);
+        }
+        if (fan_operation_time_ != nullptr) {
+            fan_operation_time_->publish_state(decode_uint16_(buffer, 3));
+        }
+        if (indoor_unit_operation_time_ != nullptr) {
+            indoor_unit_operation_time_->publish_state(decode_uint16_(buffer, 6));
+        }
+        if (precise_room_temperature_ != nullptr) {
+            precise_room_temperature_->publish_state(float(buffer[10]) + float(buffer[11]) / 10.0f);
+        }
+    }
+
     void update() {
         uint32_t millis_now = millis();
 
@@ -1544,6 +1851,7 @@ private:
                 sleep_timer_.publish_state(0);
                 ignore_callbacks_ = false;
                 this->mode = climate::CLIMATE_MODE_OFF;
+                this->action = climate::CLIMATE_ACTION_OFF;
                 pending_status_change_ = true;
                 publish_state();
             } else if (optional<uint32_t> minutes = get_sleep_timer_minutes()) {
