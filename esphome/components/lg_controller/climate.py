@@ -81,6 +81,7 @@ CONF_AUTO_DRY = "auto_dry"
 VANE_OPTIONS = ["0 (Default)", "1 (Up)", "2", "3", "4", "5", "6 (Down)"]
 OVERHEATING_OPTIONS = ["0 (Default)", "1 (+4C/+6C)", "2 (+2C/+4C)", "3 (-1C/+1C)", "4 (-0.5C/+0.5C)"]
 OVERCOOLING_OPTIONS = ["0 (Default: +0.5C/-0.5C)", "1 (+6C/+4C)", "2 (+4C/+2C)", "3 (+1C/-1C)"]
+TEMPERATURE_CONTROL_STEP_OPTIONS = ["0 (1C)", "1 (0.5C)"]
 
 CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
     {
@@ -150,7 +151,7 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
         cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): sensor.sensor_schema(accuracy_decimals=0),
         # Installer settings: 17 (0 = 1 °C, 1 = 0.5 °C control), 32 (static pressure
         # step), 46 (continuous fan), 51 (temperature-based fan speed auto).
-        cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): switch.switch_schema(LgSwitch),
+        cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): select.select_schema(LgSelect),
         cv.Optional(CONF_STATIC_PRESSURE_STEP): sensor.sensor_schema(accuracy_decimals=0),
         cv.Optional(CONF_CONTINUOUS_FAN): switch.switch_schema(LgSwitch),
         cv.Optional(CONF_TEMPERATURE_BASED_FAN_AUTO): switch.switch_schema(LgSwitch),
@@ -259,8 +260,10 @@ async def to_code(config):
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])
     cg.add(var.set_overcooling_target(config[CONF_OVERCOOLING_SETTING]))
     if CONF_TEMPERATURE_CONTROL_STEP in config:
-        step_sw = await switch.new_switch(config[CONF_TEMPERATURE_CONTROL_STEP])
-        cg.add(var.set_temperature_control_step_switch(step_sw))
+        step_sel = await select.new_select(
+            config[CONF_TEMPERATURE_CONTROL_STEP], options=TEMPERATURE_CONTROL_STEP_OPTIONS
+        )
+        cg.add(var.set_temperature_control_step_select(step_sel))
     if CONF_STATIC_PRESSURE_STEP in config:
         sens = await sensor.new_sensor(config[CONF_STATIC_PRESSURE_STEP])
         cg.add(var.set_static_pressure_step_sensor(sens))

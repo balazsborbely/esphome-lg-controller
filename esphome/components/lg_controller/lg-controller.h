@@ -166,10 +166,10 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor* fan_operation_time_;
     esphome::sensor::Sensor* indoor_unit_operation_time_;
     esphome::sensor::Sensor* precise_room_temperature_;
-    esphome::sensor::Sensor* overcooling_;
     LgSelect* overcooling_select_ = nullptr;
     esphome::sensor::Sensor* cooling_thermal_off_fan_;
-    LgSwitch* temperature_control_step_switch_ = nullptr;
+    LgSelect* temperature_control_step_select_ = nullptr;
+    uint8_t temperature_control_step_ = 0;
     esphome::sensor::Sensor* static_pressure_step_ = nullptr;
     LgSwitch* continuous_fan_switch_ = nullptr;
     LgSwitch* temperature_based_fan_auto_switch_ = nullptr;
@@ -391,15 +391,30 @@ public:
     void set_overcooling_target(int value) {
         overcooling_target_ = value;
     }
-    void set_temperature_control_step_switch(LgSwitch* s) {
-        temperature_control_step_switch_ = s;
-        if (temperature_control_step_switch_ != nullptr) {
-            temperature_control_step_switch_->add_on_state_callback([this](bool) {
-                if (ignore_callbacks_) return;
-                if (!is_initializing_) {
-                    pending_type_b_settings_change_ = true;
-                }
+    void set_temperature_control_step_select(LgSelect* s) {
+        temperature_control_step_select_ = s;
+        if (temperature_control_step_select_ != nullptr) {
+            temperature_control_step_select_->add_on_state_callback([this](size_t index) {
+                set_temperature_control_step(index);
             });
+        }
+    }
+
+    void set_temperature_control_step(int value) {
+        if (value < 0 || value > 1) {
+            ESP_LOGE(TAG, "Unexpected temperature control step value: %d", value);
+            return;
+        }
+
+        if (temperature_control_step_ == value) {
+            return;
+        }
+
+        ESP_LOGD(TAG, "Setting temperature control step installer setting: %d", value);
+
+        temperature_control_step_ = value;
+        if (!is_initializing_) {
+            pending_type_b_settings_change_ = true;
         }
     }
     void set_static_pressure_step_sensor(sensor::Sensor* s) { static_pressure_step_ = s; }
@@ -1193,12 +1208,8 @@ private:
         }
 
         // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
-        if (temperature_control_step_switch_ != nullptr) {
-            if (temperature_control_step_switch_->state) {
-                send_buf_[6] |= 0x04;
-            } else {
-                send_buf_[6] &= ~0x04;
-            }
+        if (temperature_control_step_select_ != nullptr) {
+            send_buf_[6] = (send_buf_[6] & ~0x04) | (temperature_control_step_ << 2);
         }
 
         send_buf_[12] = calc_checksum(send_buf_);
@@ -1779,10 +1790,11 @@ private:
             cooling_thermal_off_fan_->publish_state((buffer[9] >> 6) & 0b11);
         }
         // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
-        if (temperature_control_step_switch_ != nullptr) {
-            bool step_half = (buffer[6] >> 2) & 0b1;
+        uint8_t step_half = (buffer[6] >> 2) & 0b1;
+        temperature_control_step_ = step_half;
+        if (temperature_control_step_select_ != nullptr) {
             ignore_callbacks_ = true;
-            temperature_control_step_switch_->publish_state(step_half);
+            temperature_control_step_select_->publish_state(*temperature_control_step_select_->at(step_half));
             ignore_callbacks_ = false;
         }
         // Byte 10 bits 0-3 = static pressure step (installer setting 32).
