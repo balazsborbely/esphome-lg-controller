@@ -76,6 +76,25 @@ climate:
       name: Over Heating
       id: overheating
       icon: mdi:heating-coil
+    overcooling:
+      name: Overcooling
+      id: overcooling
+      icon: mdi:snowflake-thermometer
+    cooling_thermal_off_fan:
+      name: Cooling Thermal Off Fan
+      id: cooling_thermal_off_fan
+    temperature_control_step:
+      name: Temperature Control Step
+      id: temperature_control_step
+    static_pressure_step:
+      name: Static Pressure Step
+      id: static_pressure_step
+    continuous_fan:
+      name: Continous Fan
+      id: continuous_fan
+    temperature_based_fan_auto:
+      name: Temperature Based Fan Auto
+      id: temperature_based_fan_auto
     fan_speed_slow:
       name: Fan Speed Slow
       id: fan_speed_slow
@@ -133,6 +152,12 @@ climate:
     precise_room_temperature:
       name: Precise Room Temperature
       id: precise_room_temperature
+    power_consumption:
+      name: Power Consumption
+      id: power_consumption
+    current_power:
+      name: Current Power
+      id: current_power
     defrost:
       name: Defrost
       id: defrost

@@ -1,0 +1,3 @@
+*.yaml
+!base.yaml
+!template.yaml

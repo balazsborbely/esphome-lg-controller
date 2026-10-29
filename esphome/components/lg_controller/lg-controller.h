@@ -167,11 +167,12 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor* indoor_unit_operation_time_;
     esphome::sensor::Sensor* precise_room_temperature_;
     esphome::sensor::Sensor* overcooling_;
+    LgSelect* overcooling_select_ = nullptr;
     esphome::sensor::Sensor* cooling_thermal_off_fan_;
-    esphome::sensor::Sensor* temperature_control_step_ = nullptr;
+    LgSwitch* temperature_control_step_switch_ = nullptr;
     esphome::sensor::Sensor* static_pressure_step_ = nullptr;
-    esphome::sensor::Sensor* continuous_fan_ = nullptr;
-    esphome::sensor::Sensor* temperature_based_fan_auto_ = nullptr;
+    LgSwitch* continuous_fan_switch_ = nullptr;
+    LgSwitch* temperature_based_fan_auto_switch_ = nullptr;
     esphome::text_sensor::TextSensor* advanced_settings_raw_ = nullptr;
     esphome::text_sensor::TextSensor* extended_settings_raw_ = nullptr;
 
@@ -212,12 +213,13 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     uint32_t last_write_millis_ = 0;
     uint32_t last_line_busy_millis_ = 0;
 
-    enum class PendingSendKind : uint8_t { None, Status, TypeA, TypeB };
+    enum class PendingSendKind : uint8_t { None, Status, TypeA, TypeB, TypeE };
     PendingSendKind pending_send_ = PendingSendKind::None;
 
     bool pending_status_change_ = false;
     bool pending_type_a_settings_change_ = false;
     bool pending_type_b_settings_change_ = false;
+    bool pending_type_e_settings_change_ = false;
     bool pending_type_b_timed_message_ = false;
     bool operation_mode_changed_ = false;
     bool user_changed_settings_ = false;
@@ -228,6 +230,7 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     uint8_t vane_position_[4] = {0,0,0,0};
     uint8_t fan_speed_[4] = {0,0,0,0};
     uint8_t overheating_ = 0;
+    uint8_t overcooling_ = 0;
 
     // Installer setting 27 (over cooling) to write, or -1 to echo the unit's value. If the
     // unit doesn't take it, give up after a few attempts rather than resend forever.
@@ -388,10 +391,40 @@ public:
     void set_overcooling_target(int value) {
         overcooling_target_ = value;
     }
-    void set_temperature_control_step_sensor(sensor::Sensor* s) { temperature_control_step_ = s; }
+    void set_temperature_control_step_switch(LgSwitch* s) {
+        temperature_control_step_switch_ = s;
+        if (temperature_control_step_switch_ != nullptr) {
+            temperature_control_step_switch_->add_on_state_callback([this](bool) {
+                if (ignore_callbacks_) return;
+                if (!is_initializing_) {
+                    pending_type_b_settings_change_ = true;
+                }
+            });
+        }
+    }
     void set_static_pressure_step_sensor(sensor::Sensor* s) { static_pressure_step_ = s; }
-    void set_continuous_fan_sensor(sensor::Sensor* s) { continuous_fan_ = s; }
-    void set_temperature_based_fan_auto_sensor(sensor::Sensor* s) { temperature_based_fan_auto_ = s; }
+    void set_continuous_fan_switch(LgSwitch* s) {
+        continuous_fan_switch_ = s;
+        if (continuous_fan_switch_ != nullptr) {
+            continuous_fan_switch_->add_on_state_callback([this](bool) {
+                if (ignore_callbacks_) return;
+                if (!is_initializing_) {
+                    pending_type_e_settings_change_ = true;
+                }
+            });
+        }
+    }
+    void set_temperature_based_fan_auto_switch(LgSwitch* s) {
+        temperature_based_fan_auto_switch_ = s;
+        if (temperature_based_fan_auto_switch_ != nullptr) {
+            temperature_based_fan_auto_switch_->add_on_state_callback([this](bool) {
+                if (ignore_callbacks_) return;
+                if (!is_initializing_) {
+                    pending_type_e_settings_change_ = true;
+                }
+            });
+        }
+    }
     void set_advanced_settings_raw_text_sensor(text_sensor::TextSensor* s) { advanced_settings_raw_ = s; }
     void set_extended_settings_raw_text_sensor(text_sensor::TextSensor* s) { extended_settings_raw_ = s; }
 
@@ -417,7 +450,7 @@ public:
                  sensor::Sensor* fan_operation_time,
                  sensor::Sensor* indoor_unit_operation_time,
                  sensor::Sensor* precise_room_temperature,
-                 sensor::Sensor* overcooling,
+                 LgSelect* overcooling,
                  sensor::Sensor* cooling_thermal_off_fan,
                  binary_sensor::BinarySensor* defrost,
                  binary_sensor::BinarySensor* preheat,
@@ -449,7 +482,7 @@ public:
         fan_operation_time_(fan_operation_time),
         indoor_unit_operation_time_(indoor_unit_operation_time),
         precise_room_temperature_(precise_room_temperature),
-        overcooling_(overcooling),
+        overcooling_select_(overcooling),
         cooling_thermal_off_fan_(cooling_thermal_off_fan),
         defrost_(*defrost),
         preheat_(*preheat),
@@ -476,6 +509,11 @@ public:
         overheating_select_.add_on_state_callback([this](size_t index) {
             set_overheating(index);
         });
+        if (overcooling_select_ != nullptr) {
+            overcooling_select_->add_on_state_callback([this](size_t index) {
+                set_overcooling(index);
+            });
+        }
 
         fan_speed_slow_.add_on_state_callback([this](float v) {
             set_fan_speed(0, v);
@@ -656,6 +694,9 @@ public:
                 case PendingSendKind::TypeB:
                     pending_type_b_settings_change_ = true;
                     break;
+                case PendingSendKind::TypeE:
+                    pending_type_e_settings_change_ = true;
+                    break;
                 case PendingSendKind::None:
                     ESP_LOGE(TAG, "unreachable");
                     break;
@@ -676,6 +717,8 @@ public:
             } else if (pending_type_b_timed_message_) {
                 send_type_b_settings_message(/* timed = */ true);
                 pending_type_b_timed_message_ = false;
+            } else if (pending_type_e_settings_change_) {
+                send_type_e_settings_message();
             } else if (pending_status_change_) {
                 send_status_message();
             }
@@ -766,6 +809,25 @@ private:
         fan_speed_[index] = value;
         if (!is_initializing_) {
             pending_type_a_settings_change_ = true;
+        }
+    }
+
+    // Set overcooling installer setting 27 to 0-3.
+    void set_overcooling(int value) {
+        if (value < 0 || value > 3) {
+            ESP_LOGE(TAG, "Unexpected overcooling value: %d", value);
+            return;
+        }
+
+        if (overcooling_ == value) {
+            return;
+        }
+
+        ESP_LOGD(TAG, "Setting overcooling installer setting: %d", value);
+
+        overcooling_ = value;
+        if (!is_initializing_) {
+            pending_type_b_settings_change_ = true;
         }
     }
 
@@ -1123,9 +1185,20 @@ private:
         // Byte 2 stores installer setting 15.
         send_buf_[2] = (send_buf_[2] & 0xC7) | (overheating_ << 3);
 
-        // Byte 2 bits 6-7 store installer setting 27, if we're configured to write it.
-        if (overcooling_target_ >= 0) {
+        // Byte 2 bits 6-7 store installer setting 27.
+        if (overcooling_select_ != nullptr) {
+            send_buf_[2] = (send_buf_[2] & 0x3F) | (overcooling_ << 6);
+        } else if (overcooling_target_ >= 0) {
             send_buf_[2] = (send_buf_[2] & 0x3F) | (overcooling_target_ << 6);
+        }
+
+        // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
+        if (temperature_control_step_switch_ != nullptr) {
+            if (temperature_control_step_switch_->state) {
+                send_buf_[6] |= 0x04;
+            } else {
+                send_buf_[6] &= ~0x04;
+            }
         }
 
         send_buf_[12] = calc_checksum(send_buf_);
@@ -1137,6 +1210,37 @@ private:
         pending_type_b_settings_change_ = false;
         pending_send_ = PendingSendKind::TypeB;
         last_sent_recv_type_b_millis_ = last_write_millis_;
+    }
+
+    void send_type_e_settings_message() {
+        memset(send_buf_, 0, MsgLen);
+        if (last_recv_type_e_settings_[1][0] != 0) {
+            memcpy(send_buf_, last_recv_type_e_settings_[1], MsgLen);
+        }
+        send_buf_[0] = slave_ ? 0x2E : 0xAE;
+        send_buf_[1] = 0x10;
+        if (continuous_fan_switch_ != nullptr) {
+            if (continuous_fan_switch_->state) {
+                send_buf_[4] |= 0x02;
+            } else {
+                send_buf_[4] &= ~0x02;
+            }
+        }
+        if (temperature_based_fan_auto_switch_ != nullptr) {
+            if (temperature_based_fan_auto_switch_->state) {
+                send_buf_[4] |= 0x04;
+            } else {
+                send_buf_[4] &= ~0x04;
+            }
+        }
+        send_buf_[12] = calc_checksum(send_buf_);
+
+        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        UARTDevice::write_array(send_buf_, MsgLen);
+        last_write_millis_ = millis();
+
+        pending_type_e_settings_change_ = false;
+        pending_send_ = PendingSendKind::TypeE;
     }
 
     void process_message(const uint8_t* buffer) {
@@ -1653,14 +1757,14 @@ private:
             ESP_LOGE(TAG, "Unexpected overheating value: %u", overheating);
         }
 
-        // Byte 2 bits 6-7 = over cooling (installer setting 27), byte 9 bits 6-7 = fan in
-        // cooling thermal off (installer setting 35). Outgoing 0xAB messages start from a copy
-        // of this message, so both are echoed back unchanged unless overcooling_setting is set.
+        // Byte 2 bits 6-7 = over cooling (installer setting 27)
         uint8_t overcooling = (buffer[2] >> 6) & 0b11;
-        if (overcooling_ != nullptr) {
-            overcooling_->publish_state(overcooling);
-        }
-        if (overcooling_target_ >= 0 && overcooling != overcooling_target_) {
+        overcooling_ = overcooling;
+        if (overcooling_select_ != nullptr) {
+            ignore_callbacks_ = true;
+            overcooling_select_->publish_state(*overcooling_select_->at(overcooling));
+            ignore_callbacks_ = false;
+        } else if (overcooling_target_ >= 0 && overcooling != overcooling_target_) {
             if (overcooling_write_attempts_ < 3) {
                 overcooling_write_attempts_++;
                 ESP_LOGD(TAG, "Setting over cooling installer setting: %u -> %d (attempt %u)",
@@ -1675,8 +1779,11 @@ private:
             cooling_thermal_off_fan_->publish_state((buffer[9] >> 6) & 0b11);
         }
         // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
-        if (temperature_control_step_ != nullptr) {
-            temperature_control_step_->publish_state((buffer[6] >> 2) & 0b1);
+        if (temperature_control_step_switch_ != nullptr) {
+            bool step_half = (buffer[6] >> 2) & 0b1;
+            ignore_callbacks_ = true;
+            temperature_control_step_switch_->publish_state(step_half);
+            ignore_callbacks_ = false;
         }
         // Byte 10 bits 0-3 = static pressure step (installer setting 32).
         if (static_pressure_step_ != nullptr) {
@@ -1792,12 +1899,14 @@ private:
         // 0xCE.10 byte 4: bit 1 = continuous fan (installer setting 46), bit 2 =
         // temperature-based fan speed auto (51).
         if (buffer[1] == 0x10) {
-            if (continuous_fan_ != nullptr) {
-                continuous_fan_->publish_state((buffer[4] >> 1) & 0b1);
+            ignore_callbacks_ = true;
+            if (continuous_fan_switch_ != nullptr) {
+                continuous_fan_switch_->publish_state((buffer[4] >> 1) & 0b1);
             }
-            if (temperature_based_fan_auto_ != nullptr) {
-                temperature_based_fan_auto_->publish_state((buffer[4] >> 2) & 0b1);
+            if (temperature_based_fan_auto_switch_ != nullptr) {
+                temperature_based_fan_auto_switch_->publish_state((buffer[4] >> 2) & 0b1);
             }
+            ignore_callbacks_ = false;
         }
 
         // One string for all four sub-frames, those not yet received left out.
