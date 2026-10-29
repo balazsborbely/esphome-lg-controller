@@ -170,6 +170,7 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor* cooling_thermal_off_fan_;
     LgSelect* temperature_control_step_select_ = nullptr;
     uint8_t temperature_control_step_ = 0;
+    float target_temperature_step_ = 0.5f;
     esphome::sensor::Sensor* static_pressure_step_ = nullptr;
     LgSwitch* continuous_fan_switch_ = nullptr;
     LgSwitch* temperature_based_fan_auto_switch_ = nullptr;
@@ -390,6 +391,10 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
 public:
     void set_overcooling_target(int value) {
         overcooling_target_ = value;
+    }
+    void set_target_temperature_step(float step) {
+        target_temperature_step_ = step;
+        supported_traits_.set_visual_target_temperature_step(fahrenheit_ ? 1.0f : step);
     }
     void set_temperature_control_step_select(LgSelect* s) {
         temperature_control_step_select_ = s;
@@ -742,7 +747,11 @@ public:
     }
 
     climate::ClimateTraits traits() override {
-        return supported_traits_;
+        auto t = supported_traits_;
+        if (!fahrenheit_) {
+            t.set_visual_target_temperature_step(target_temperature_step_);
+        }
+        return t;
     }
 
 private:

@@ -34,6 +34,7 @@ LgSwitch = lg_controller_ns.class_("LgSwitch", switch.Switch, cg.Component)
 
 CONF_FAHRENHEIT = "fahrenheit"
 CONF_IS_SLAVE_CONTROLLER = "is_slave_controller"
+CONF_TARGET_TEMPERATURE_STEP = "target_temperature_step"
 CONF_OVERCOOLING_SETTING = "overcooling_setting"
 
 CONF_TEMPERATURE_SENSOR = "temperature_sensor"
@@ -259,6 +260,7 @@ async def to_code(config):
                            purifier, internal_thermistor, auto_dry,
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])
     cg.add(var.set_overcooling_target(config[CONF_OVERCOOLING_SETTING]))
+    cg.add(var.set_target_temperature_step(config[CONF_TARGET_TEMPERATURE_STEP]))
     if CONF_TEMPERATURE_CONTROL_STEP in config:
         step_sel = await select.new_select(
             config[CONF_TEMPERATURE_CONTROL_STEP], options=TEMPERATURE_CONTROL_STEP_OPTIONS
