@@ -83,6 +83,7 @@ VANE_OPTIONS = ["0 (Default)", "1 (Up)", "2", "3", "4", "5", "6 (Down)"]
 OVERHEATING_OPTIONS = ["0 (Default)", "1 (+4C/+6C)", "2 (+2C/+4C)", "3 (-1C/+1C)", "4 (-0.5C/+0.5C)"]
 OVERCOOLING_OPTIONS = ["0 (Default: +0.5C/-0.5C)", "1 (+6C/+4C)", "2 (+4C/+2C)", "3 (+1C/-1C)"]
 TEMPERATURE_CONTROL_STEP_OPTIONS = ["0 (1C)", "1 (0.5C)"]
+COOLING_THERMAL_OFF_FAN_OPTIONS = ["0 (Fan Low)", "1 (Fan Off)", "2 (Fan Setting)"]
 
 CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
     {
@@ -150,7 +151,7 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
         ),
         # Installer setting 27 (overcooling) as select dropdown.
         cv.Optional(CONF_OVERCOOLING): select.select_schema(LgSelect),
-        cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): select.select_schema(LgSelect),
         # Installer settings: 17 (0 = 1 °C, 1 = 0.5 °C control), 32 (static pressure
         # step), 46 (continuous fan), 51 (temperature-based fan speed auto).
         cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): select.select_schema(LgSelect),
@@ -235,7 +236,9 @@ async def to_code(config):
     else:
         overcooling = cg.nullptr
     if CONF_COOLING_THERMAL_OFF_FAN in config:
-        cooling_thermal_off_fan = await sensor.new_sensor(config[CONF_COOLING_THERMAL_OFF_FAN])
+        cooling_thermal_off_fan = await select.new_select(
+            config[CONF_COOLING_THERMAL_OFF_FAN], options=COOLING_THERMAL_OFF_FAN_OPTIONS
+        )
     else:
         cooling_thermal_off_fan = cg.nullptr
 

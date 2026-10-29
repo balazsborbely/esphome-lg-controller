@@ -167,7 +167,8 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor* indoor_unit_operation_time_;
     esphome::sensor::Sensor* precise_room_temperature_;
     LgSelect* overcooling_select_ = nullptr;
-    esphome::sensor::Sensor* cooling_thermal_off_fan_;
+    LgSelect* cooling_thermal_off_fan_select_ = nullptr;
+    uint8_t cooling_thermal_off_fan_ = 0;
     LgSelect* temperature_control_step_select_ = nullptr;
     uint8_t temperature_control_step_ = 0;
     float target_temperature_step_ = 0.5f;
@@ -471,7 +472,7 @@ public:
                  sensor::Sensor* indoor_unit_operation_time,
                  sensor::Sensor* precise_room_temperature,
                  LgSelect* overcooling,
-                 sensor::Sensor* cooling_thermal_off_fan,
+                 LgSelect* cooling_thermal_off_fan,
                  binary_sensor::BinarySensor* defrost,
                  binary_sensor::BinarySensor* preheat,
                  binary_sensor::BinarySensor* outdoor,
@@ -503,7 +504,7 @@ public:
         indoor_unit_operation_time_(indoor_unit_operation_time),
         precise_room_temperature_(precise_room_temperature),
         overcooling_select_(overcooling),
-        cooling_thermal_off_fan_(cooling_thermal_off_fan),
+        cooling_thermal_off_fan_select_(cooling_thermal_off_fan),
         defrost_(*defrost),
         preheat_(*preheat),
         outdoor_(*outdoor),
@@ -532,6 +533,11 @@ public:
         if (overcooling_select_ != nullptr) {
             overcooling_select_->add_on_state_callback([this](size_t index) {
                 set_overcooling(index);
+            });
+        }
+        if (cooling_thermal_off_fan_select_ != nullptr) {
+            cooling_thermal_off_fan_select_->add_on_state_callback([this](size_t index) {
+                set_cooling_thermal_off_fan(index);
             });
         }
 
@@ -833,6 +839,25 @@ private:
         fan_speed_[index] = value;
         if (!is_initializing_) {
             pending_type_a_settings_change_ = true;
+        }
+    }
+
+    // Set cooling thermal off fan installer setting 35 to 0-2.
+    void set_cooling_thermal_off_fan(int value) {
+        if (value < 0 || value > 2) {
+            ESP_LOGE(TAG, "Unexpected cooling thermal off fan value: %d", value);
+            return;
+        }
+
+        if (cooling_thermal_off_fan_ == value) {
+            return;
+        }
+
+        ESP_LOGD(TAG, "Setting cooling thermal off fan installer setting: %d", value);
+
+        cooling_thermal_off_fan_ = value;
+        if (!is_initializing_) {
+            pending_type_b_settings_change_ = true;
         }
     }
 
@@ -1219,6 +1244,11 @@ private:
         // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
         if (temperature_control_step_select_ != nullptr) {
             send_buf_[6] = (send_buf_[6] & ~0x04) | (temperature_control_step_ << 2);
+        }
+
+        // Byte 9 bits 6-7 = fan in cooling thermal off (installer setting 35).
+        if (cooling_thermal_off_fan_select_ != nullptr) {
+            send_buf_[9] = (send_buf_[9] & 0x3F) | (cooling_thermal_off_fan_ << 6);
         }
 
         send_buf_[12] = calc_checksum(send_buf_);
@@ -1795,8 +1825,15 @@ private:
                 ESP_LOGE(TAG, "Unit did not accept over cooling %d (still %u)", overcooling_target_, overcooling);
             }
         }
-        if (cooling_thermal_off_fan_ != nullptr) {
-            cooling_thermal_off_fan_->publish_state((buffer[9] >> 6) & 0b11);
+        // Byte 9 bits 6-7 = fan in cooling thermal off (installer setting 35).
+        uint8_t thermal_off_fan = (buffer[9] >> 6) & 0b11;
+        if (thermal_off_fan <= 2) {
+            cooling_thermal_off_fan_ = thermal_off_fan;
+            if (cooling_thermal_off_fan_select_ != nullptr) {
+                ignore_callbacks_ = true;
+                cooling_thermal_off_fan_select_->publish_state(*cooling_thermal_off_fan_select_->at(thermal_off_fan));
+                ignore_callbacks_ = false;
+            }
         }
         // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
         uint8_t step_half = (buffer[6] >> 2) & 0b1;
