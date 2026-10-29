@@ -90,6 +90,7 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
 
         cv.Required(CONF_FAHRENHEIT): cv.boolean,
         cv.Required(CONF_IS_SLAVE_CONTROLLER): cv.boolean,
+        cv.Optional(CONF_TARGET_TEMPERATURE_STEP, default=0.5): cv.one_of(0.5, 1.0, float=True),
         # Installer setting 27 to write to the unit (0-3). -1 or omitted = echo the unit's value.
         cv.Optional(CONF_OVERCOOLING_SETTING, default=-1): cv.int_range(min=-1, max=3),
 

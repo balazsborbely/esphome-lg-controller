@@ -48,6 +48,7 @@ climate:
   - platform: lg_controller
     name: ""
     id: ${deviceid}
+    target_temperature_step: 1.0
     uart_id: ac_serial
     rx_pin:
       # For the FeatherS3, use GPIO17
