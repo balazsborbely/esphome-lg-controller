@@ -375,6 +375,10 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     }
 
 public:
+    void set_overcooling_target(int value) {
+        overcooling_target_ = value;
+    }
+
     LgController(InternalGPIOPin* rx_pin,
                  sensor::Sensor* temperature_sensor,
                  LgSelect* vane_select_1,
@@ -747,10 +751,6 @@ private:
         if (!is_initializing_) {
             pending_type_a_settings_change_ = true;
         }
-    }
-
-    void set_overcooling_target(int value) {
-        overcooling_target_ = value;
     }
 
     // Set overheating installer setting 15 to 0-4.
