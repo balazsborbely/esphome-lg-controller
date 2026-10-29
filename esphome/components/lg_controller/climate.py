@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import pins
-from esphome.components import binary_sensor, climate, number, select, sensor, switch, uart
+from esphome.components import binary_sensor, climate, number, select, sensor, switch, text_sensor, uart
 from esphome.const import (
     CONF_ID,
     CONF_RX_PIN,
@@ -22,7 +22,7 @@ from esphome.const import (
 
 CODEOWNERS = ["JanM321"]
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["binary_sensor", "number", "switch", "sensor", "select"]
+AUTO_LOAD = ["binary_sensor", "number", "switch", "sensor", "select", "text_sensor"]
 
 lg_controller_ns = cg.esphome_ns.namespace("lg_controller")
 LgController = lg_controller_ns.class_(
@@ -62,6 +62,12 @@ CONF_INDOOR_UNIT_OPERATION_TIME = "indoor_unit_operation_time"
 CONF_PRECISE_ROOM_TEMPERATURE = "precise_room_temperature"
 CONF_OVERCOOLING = "overcooling"
 CONF_COOLING_THERMAL_OFF_FAN = "cooling_thermal_off_fan"
+CONF_TEMPERATURE_CONTROL_STEP = "temperature_control_step"
+CONF_STATIC_PRESSURE_STEP = "static_pressure_step"
+CONF_CONTINUOUS_FAN = "continuous_fan"
+CONF_TEMPERATURE_BASED_FAN_AUTO = "temperature_based_fan_auto"
+CONF_ADVANCED_SETTINGS_RAW = "advanced_settings_raw"
+CONF_EXTENDED_SETTINGS_RAW = "extended_settings_raw"
 
 CONF_DEFROST = "defrost"
 CONF_PREHEAT = "preheat"
@@ -141,6 +147,16 @@ CONFIG_SCHEMA = climate.climate_schema(LgController).extend(
         # Read-only installer settings from the unit's 0xCB message.
         cv.Optional(CONF_OVERCOOLING): sensor.sensor_schema(accuracy_decimals=0),
         cv.Optional(CONF_COOLING_THERMAL_OFF_FAN): sensor.sensor_schema(accuracy_decimals=0),
+        # Read-only installer settings: 17 (0 = 1 °C, 1 = 0.5 °C control), 32 (static pressure
+        # step), 46 (continuous fan), 51 (temperature-based fan speed auto).
+        cv.Optional(CONF_TEMPERATURE_CONTROL_STEP): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_STATIC_PRESSURE_STEP): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_CONTINUOUS_FAN): sensor.sensor_schema(accuracy_decimals=0),
+        cv.Optional(CONF_TEMPERATURE_BASED_FAN_AUTO): sensor.sensor_schema(accuracy_decimals=0),
+        # Raw hex of the unit's 0xCD frame and 0xCE.00/10/11/12 sub-frames, which are only
+        # partly documented. Published only when they change.
+        cv.Optional(CONF_ADVANCED_SETTINGS_RAW): text_sensor.text_sensor_schema(),
+        cv.Optional(CONF_EXTENDED_SETTINGS_RAW): text_sensor.text_sensor_schema(),
 
         cv.Required(CONF_DEFROST): binary_sensor.binary_sensor_schema(),
         cv.Required(CONF_PREHEAT): binary_sensor.binary_sensor_schema(),
@@ -241,6 +257,15 @@ async def to_code(config):
                            purifier, internal_thermistor, auto_dry,
                            config[CONF_FAHRENHEIT], config[CONF_IS_SLAVE_CONTROLLER])
     cg.add(var.set_overcooling_target(config[CONF_OVERCOOLING_SETTING]))
+    for key in (CONF_TEMPERATURE_CONTROL_STEP, CONF_STATIC_PRESSURE_STEP,
+                CONF_CONTINUOUS_FAN, CONF_TEMPERATURE_BASED_FAN_AUTO):
+        if key in config:
+            sens = await sensor.new_sensor(config[key])
+            cg.add(getattr(var, f"set_{key}_sensor")(sens))
+    for key in (CONF_ADVANCED_SETTINGS_RAW, CONF_EXTENDED_SETTINGS_RAW):
+        if key in config:
+            sens = await text_sensor.new_text_sensor(config[key])
+            cg.add(getattr(var, f"set_{key}_text_sensor")(sens))
     await climate.register_climate(var, config)
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)

@@ -4,6 +4,7 @@
 
 #include "esphome.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/text_sensor/text_sensor.h"
 
 static const char* const TAG = "lg-controller";
 
@@ -167,6 +168,15 @@ class LgController final : public climate::Climate, public uart::UARTDevice, pub
     esphome::sensor::Sensor* precise_room_temperature_;
     esphome::sensor::Sensor* overcooling_;
     esphome::sensor::Sensor* cooling_thermal_off_fan_;
+    esphome::sensor::Sensor* temperature_control_step_ = nullptr;
+    esphome::sensor::Sensor* static_pressure_step_ = nullptr;
+    esphome::sensor::Sensor* continuous_fan_ = nullptr;
+    esphome::sensor::Sensor* temperature_based_fan_auto_ = nullptr;
+    esphome::text_sensor::TextSensor* advanced_settings_raw_ = nullptr;
+    esphome::text_sensor::TextSensor* extended_settings_raw_ = nullptr;
+
+    // Last 0xCE.00/10/11/12 sub-frames from the unit, for extended_settings_raw.
+    uint8_t last_recv_type_e_settings_[4][MsgLen] = {};
     esphome::binary_sensor::BinarySensor& defrost_;
     esphome::binary_sensor::BinarySensor& preheat_;
     esphome::binary_sensor::BinarySensor& outdoor_;
@@ -378,6 +388,12 @@ public:
     void set_overcooling_target(int value) {
         overcooling_target_ = value;
     }
+    void set_temperature_control_step_sensor(sensor::Sensor* s) { temperature_control_step_ = s; }
+    void set_static_pressure_step_sensor(sensor::Sensor* s) { static_pressure_step_ = s; }
+    void set_continuous_fan_sensor(sensor::Sensor* s) { continuous_fan_ = s; }
+    void set_temperature_based_fan_auto_sensor(sensor::Sensor* s) { temperature_based_fan_auto_ = s; }
+    void set_advanced_settings_raw_text_sensor(text_sensor::TextSensor* s) { advanced_settings_raw_ = s; }
+    void set_extended_settings_raw_text_sensor(text_sensor::TextSensor* s) { extended_settings_raw_ = s; }
 
     LgController(InternalGPIOPin* rx_pin,
                  sensor::Sensor* temperature_sensor,
@@ -1197,6 +1213,9 @@ private:
             case 4: // 0xCC/AC/2C
                 process_type_c_status_message(*sender, buffer);
                 break;
+            case 5: // 0xCD/AD/2D
+                process_type_d_settings_message(*sender, buffer);
+                break;
             case 6: // 0xCE/AE/2E
                 process_type_e_status_message(*sender, buffer);
                 break;
@@ -1655,6 +1674,14 @@ private:
         if (cooling_thermal_off_fan_ != nullptr) {
             cooling_thermal_off_fan_->publish_state((buffer[9] >> 6) & 0b11);
         }
+        // Byte 6 bit 2 = centigrade control (installer setting 17): 0 = 1 °C, 1 = 0.5 °C.
+        if (temperature_control_step_ != nullptr) {
+            temperature_control_step_->publish_state((buffer[6] >> 2) & 0b1);
+        }
+        // Byte 10 bits 0-3 = static pressure step (installer setting 32).
+        if (static_pressure_step_ != nullptr) {
+            static_pressure_step_->publish_state(buffer[10] & 0x0F);
+        }
 
         // Table mapping a byte value to degrees Celsius based on values displayed by PREMTB100.
         // INT8_MIN indicates an invalid value.
@@ -1729,7 +1756,69 @@ private:
         return (uint16_t(buffer[offset]) << 8) | buffer[offset + 1];
     }
 
+    static std::string format_frame_(const uint8_t* buffer) {
+        char hex[MsgLen * 3];
+        for (size_t i = 0; i < MsgLen; i++) {
+            snprintf(hex + i * 3, 4, i + 1 < MsgLen ? "%02X." : "%02X", buffer[i]);
+        }
+        return std::string(hex);
+    }
+
+    static void publish_if_changed_(text_sensor::TextSensor* sensor, const std::string& value) {
+        if (sensor != nullptr && (!sensor->has_state() || sensor->get_state() != value)) {
+            sensor->publish_state(value);
+        }
+    }
+
+    // Type 5 (0xCD): advanced installer settings, mostly undocumented. Raw only.
+    void process_type_d_settings_message(MessageSender sender, const uint8_t* buffer) {
+        if (sender != MessageSender::Unit) {
+            return;
+        }
+        publish_if_changed_(advanced_settings_raw_, format_frame_(buffer));
+    }
+
+    void process_type_e_settings_message(const uint8_t* buffer) {
+        int slot;
+        switch (buffer[1]) {
+            case 0x00: slot = 0; break;
+            case 0x10: slot = 1; break;
+            case 0x11: slot = 2; break;
+            case 0x12: slot = 3; break;
+            default: return;
+        }
+        memcpy(last_recv_type_e_settings_[slot], buffer, MsgLen);
+
+        // 0xCE.10 byte 4: bit 1 = continuous fan (installer setting 46), bit 2 =
+        // temperature-based fan speed auto (51).
+        if (buffer[1] == 0x10) {
+            if (continuous_fan_ != nullptr) {
+                continuous_fan_->publish_state((buffer[4] >> 1) & 0b1);
+            }
+            if (temperature_based_fan_auto_ != nullptr) {
+                temperature_based_fan_auto_->publish_state((buffer[4] >> 2) & 0b1);
+            }
+        }
+
+        // One string for all four sub-frames, those not yet received left out.
+        std::string all;
+        for (auto& frame : last_recv_type_e_settings_) {
+            if (frame[0] == 0) {
+                continue;
+            }
+            if (!all.empty()) {
+                all += " ";
+            }
+            all += format_frame_(frame);
+        }
+        publish_if_changed_(extended_settings_raw_, all);
+    }
+
     void process_type_e_status_message(MessageSender sender, const uint8_t* buffer) {
+        if (sender == MessageSender::Unit && buffer[1] != 0x80) {
+            process_type_e_settings_message(buffer);
+            return;
+        }
         if (sender == MessageSender::Slave || buffer[1] != 0x80) {
             return;
         }
