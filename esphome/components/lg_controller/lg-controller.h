@@ -1259,8 +1259,14 @@ public:
         if (recv_buf_len_ > 0) {
             // A byte takes about 96 milliseconds to transmit.
             if (millis_now - last_recv_millis_ > 150) {
-                ESP_LOGE(TAG, "discarding incomplete data %s",
-                         format_hex_pretty(recv_buf_, recv_buf_len_).c_str());
+                char hex[MsgLen * 3];
+                if (recv_buf_len_ > 4) {
+                    ESP_LOGE(TAG, "discarding incomplete data %s (%u)",
+                             format_hex_pretty_to(hex, recv_buf_, recv_buf_len_, '.'), unsigned(recv_buf_len_));
+                } else {
+                    ESP_LOGE(TAG, "discarding incomplete data %s",
+                             format_hex_pretty_to(hex, recv_buf_, recv_buf_len_, '.'));
+                }
                 recv_buf_len_ = 0;
             }
             return;
@@ -2173,7 +2179,8 @@ private:
         // Byte 12.
         send_buf_[12] = calc_checksum(send_buf_);
 
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = millis();
 
@@ -2269,7 +2276,8 @@ private:
 
         send_buf_[12] = calc_checksum(send_buf_);
 
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = millis();
 
@@ -2337,7 +2345,8 @@ private:
         }
         send_buf_[12] = calc_checksum(send_buf_);
         ESP_LOGI(TAG, "SLAVE ESP CAL READBACK: requesting fresh indoor CA (28 full-settings refresh)");
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = now;
         slave_fan_cal_readback_millis_ = now;
@@ -2373,7 +2382,8 @@ private:
             ESP_LOGI(TAG, "SLAVE PIPE DISCOVERY: one-time 28 full-settings refresh "
                           "(byte8=0x40); no installer-settings bytes guessed");
         }
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = millis();
         last_sent_recv_type_b_millis_ = last_write_millis_;
@@ -2405,7 +2415,8 @@ private:
             send_buf_[12] = calc_checksum(send_buf_);
             ESP_LOGI(TAG, "SLAVE PIPE POLL: sending 2B.80 read request from observed %s template",
                      slave_pipe_temp_poll_.template_source());
-            ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+            char hex[MsgLen * 3];
+            ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
             UARTDevice::write_array(send_buf_, MsgLen);
             last_write_millis_ = millis();
             last_sent_recv_type_b_millis_ = last_write_millis_;
@@ -2457,7 +2468,8 @@ private:
 
         send_buf_[12] = calc_checksum(send_buf_);
 
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = millis();
 
@@ -2500,7 +2512,8 @@ private:
         }
         send_buf_[12] = calc_checksum(send_buf_);
 
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = millis();
 
@@ -2510,7 +2523,8 @@ private:
     }
 
     void process_message(const uint8_t* buffer) {
-        ESP_LOGD(TAG, "received %s", format_hex_pretty(buffer, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "received %s (%u)", format_hex_pretty_to(hex, buffer, MsgLen, '.'), unsigned(MsgLen));
 
         if (calc_checksum(buffer) != buffer[12]) {
             // When initializing, the unit sends an all-zeroes message as padding between
@@ -2520,7 +2534,7 @@ private:
                 ESP_LOGD(TAG, "Ignoring padding message sent by unit");
                 return;
             }
-            ESP_LOGE(TAG, "invalid checksum %s", format_hex_pretty(buffer, MsgLen).c_str());
+            ESP_LOGE(TAG, "invalid checksum %s (%u)", format_hex_pretty_to(hex, buffer, MsgLen, '.'), unsigned(MsgLen));
             return;
         }
 
@@ -3918,7 +3932,8 @@ private:
         tx.readback_sent_at = now;
         ESP_LOGI(TAG, "FLOOR READBACK: guarded 28 settings refresh after page %u attempt %u/2; awaiting genuine indoor page",
                  unsigned(tx.page), unsigned(tx.transmissions));
-        ESP_LOGD(TAG, "sending %s", format_hex_pretty(send_buf_, MsgLen).c_str());
+        char hex[MsgLen * 3];
+        ESP_LOGD(TAG, "sending %s (%u)", format_hex_pretty_to(hex, send_buf_, MsgLen, '.'), unsigned(MsgLen));
         UARTDevice::write_array(send_buf_, MsgLen);
         last_write_millis_ = now;
         pending_send_ = PendingSendKind::FloorConsoleReadback;
