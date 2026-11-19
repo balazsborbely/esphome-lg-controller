@@ -1,45 +1,75 @@
+# LG Controller V2.0.0 standard base — nine normal units, Master or Slave.
+# Use <<: !include base-lg-ac.yaml in each device YAML.
+# Uses the same enhanced source, with floor-standing features OFF.
+# No substitutions section: existing device substitutions remain in device YAML.
+
 esphome:
   name: ${deviceid}
   friendly_name: ${devicename}
 
 esp32:
   board: esp32dev
-  # For the FeatherS3, uncomment the next two lines and remove the line above.
-  #board: um_feathers3
-  #variant: esp32s3
+  # For the FeatherS3, replace the board above with:
+  # board: um_feathers3
+  # variant: esp32s3
   framework:
     type: esp-idf
+    advanced:
+      minimum_chip_revision: "3.1"
+      sram1_as_iram: true
+      flash_chip: generic
 
-#esp32_ble_tracker:
-#  scan_parameters:
-#    active: false
+# esp32_ble_tracker:
+#   scan_parameters:
+#     active: false
 
-#bluetooth_proxy:
-#  active: false
+# bluetooth_proxy:
+#   active: false
 
 uart:
   - id: ac_serial
-    # For the FeatherS3, use GPIO18
     tx_pin: GPIO25
     rx_pin:
-      # For the FeatherS3, use GPIO17
-      number: GPIO26 # Keep in sync with rx_pin below.
+      number: GPIO26
       allow_other_uses: true
-    baud_rate: 104
+    baud_rate: 100
 
 time:
   - platform: homeassistant
     id: homeassistant_time
 
 sensor:
-  - id: temp_sensor
-    platform: homeassistant
+  - platform: homeassistant
+    id: temp_sensor
     internal: true
     entity_id: ${temperature_sensor_entity_id}
+
   - platform: uptime
     type: timestamp
     name: Last Boot
 
+  # Wi-Fi strength converted from dBm to 0-100%.
+  # Measured once every five minutes.
+  - platform: wifi_signal
+    name: "Wi-Fi Quality"
+    update_interval: 300s
+    unit_of_measurement: "%"
+    device_class: ""
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    filters:
+      - lambda: |-
+          if (x <= -100.0f) return 0.0f;
+          if (x >= -50.0f) return 100.0f;
+          return 2.0f * (x + 100.0f);
+
+text_sensor:
+  - platform: wifi_info
+    ssid:
+      name: "Wi-Fi SSID"
+      entity_category: diagnostic
+
+# Single shared enhanced component for both kinds of LG unit.
 external_components:
   - source: components
     components: [lg_controller]
@@ -47,16 +77,20 @@ external_components:
 climate:
   - platform: lg_controller
     name: ""
-    id: ${deviceid}
-    target_temperature_step: 1.0
+    id: ${deviceid_id_safe}
+    target_temperature_step: 0.5
     uart_id: ac_serial
     rx_pin:
-      # For the FeatherS3, use GPIO17
-      number: GPIO26 # Keep in sync with rx_pin above.
+      number: GPIO26
       allow_other_uses: true
     fahrenheit: ${fahrenheit}
     is_slave_controller: ${is_slave_controller}
+    # Standard 9 units: disable floor-specific controls and reverse mapping.
+    floor_console_monitoring: false
+    floor_console_features: false
+    floor_console_reversed_airflow: false
     temperature_sensor: temp_sensor
+
     vane1:
       name: Airflow 1 Up-Down
       id: vane_position_1
@@ -73,6 +107,7 @@ climate:
       name: Airflow 4 Up-Down
       id: vane_position_4
       icon: mdi:arrow-up-down
+
     overheating:
       name: Over Heating
       id: overheating
@@ -91,11 +126,35 @@ climate:
       name: Static Pressure Step
       id: static_pressure_step
     continuous_fan:
-      name: Continous Fan
+      name: Continuous Fan
       id: continuous_fan
     temperature_based_fan_auto:
       name: Temperature Based Fan Auto
       id: temperature_based_fan_auto
+
+    # Read-only installer diagnostics: only exposed when operating as Slave.
+    # These declarations do not add entities on Master devices.
+    installer_overheating_status:
+      name: "Installer - Overheating"
+    installer_overcooling_status:
+      name: "Installer - Overcooling"
+    installer_cooling_thermal_off_fan_status:
+      name: "Installer - Cooling Thermal Off Fan"
+    installer_temperature_control_step_status:
+      name: "Installer - Temperature Control Step"
+    installer_continuous_fan_status:
+      name: "Installer - Continuous Fan"
+    installer_temperature_based_fan_auto_status:
+      name: "Installer - Temperature Based Fan Auto"
+    installer_fan_speed_slow_status:
+      name: "Installer - Fan Speed Slow (raw)"
+    installer_fan_speed_low_status:
+      name: "Installer - Fan Speed Low (raw)"
+    installer_fan_speed_medium_status:
+      name: "Installer - Fan Speed Medium (raw)"
+    installer_fan_speed_high_status:
+      name: "Installer - Fan Speed High (raw)"
+
     fan_speed_slow:
       name: Fan Speed Slow
       id: fan_speed_slow
@@ -116,11 +175,13 @@ climate:
       id: fan_speed_high
       icon: mdi:fan-speed-3
       mode: box
+
     sleep_timer:
       name: "Sleep Timer (minutes)"
       id: sleep_timer
       icon: mdi:timer-outline
       mode: box
+
     error_code:
       name: Error Code
       id: error_code
@@ -153,12 +214,19 @@ climate:
     precise_room_temperature:
       name: Precise Room Temperature
       id: precise_room_temperature
+    # Remaining filter operating time reported by compatible LG indoor units.
+    # Remains unknown until two consistent genuine indoor CC frames are received.
+    filter_time_remaining:
+      name: "Filter Time Remaining"
+      icon: mdi:air-filter
+
     power_consumption:
       name: Power Consumption
       id: power_consumption
     current_power:
       name: Current Power
       id: current_power
+
     defrost:
       name: Defrost
       id: defrost
@@ -187,3 +255,11 @@ climate:
       name: Auto Dry
       id: auto_dry
       icon: mdi:fan-clock
+
+button:
+  - platform: restart
+    name: "ESP32 Reboot"
+    entity_category: diagnostic
+
+web_server:
+  port: 80
